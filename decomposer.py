@@ -6,7 +6,7 @@ from pdf2image import convert_from_path
 from buildOCR import buildOCR
 from imgPreprocessing import cutTailFor, drawLinesFor, enhanceFor, int_to_roman
 from difflib import SequenceMatcher
-import os
+import os, shutil
 import time
 import json
 import sqlite3
@@ -35,8 +35,8 @@ class Decomposer:
                 self.pattern.append(f"{int_to_roman(i)})")
                 self.pattern.append(f"({int_to_roman(i)})")
         elif pattern == "Choice":
-            self.pattern = [f"({crctr})" for crctr in string.ascii_lowercase]
-            for crctr in string.ascii_lowercase:
+            self.pattern = []
+            for crctr in ["a", "b", "c", "d"]:
                 self.pattern.append(f"({crctr})")
                 self.pattern.append(f"{crctr})")
                 self.pattern.append(f"({crctr.swapcase()})")
@@ -53,8 +53,8 @@ class Decomposer:
         print(f"Scanned Results for image {filename}")
         print("\n\n")
         print(self.strppr)
-        print("\n\nstrpos:")
-        print(self.strpos.replace('\n', '||||||||||||||||||||||'))
+        # print("\n\nstrpos:")
+        # print(self.strpos.replace('\n', '||||||||||||||||||||||'))
 
     @staticmethod
     def dfedOCR(stri):
@@ -81,11 +81,14 @@ class Decomposer:
         :return: The relative position of every question mark located in percentage.
         """
         print("Processing commence")
-        dfppr = self.dfedOCR(self.strppr)
-        lstpos = self.strpos.split("\n")
-        lstpos = [row.split() for row in lstpos]
-        lstpos = [row for row in lstpos if row[0] not in ['~']]
-        print(lstpos)
+
+        try:
+            dfppr = self.dfedOCR(self.strppr)
+            lstpos = self.strpos.split("\n")
+            lstpos = [row.split() for row in lstpos]
+            lstpos = [row for row in lstpos if row[0] not in ['~']]
+        except:
+            return "return"
         counter = 0
         validater = 0
         searchList = []
@@ -101,8 +104,12 @@ class Decomposer:
             # Check if row starts with a question number.
             try:
                 for questionMark in self.pattern:
-                    if SequenceMatcher(None, questionMark, rowByWord[0]).ratio() >= 0.5:
+                    wordInNum = ''.join([num for num in list(rowByWord[0])])
+                    if SequenceMatcher(None, questionMark, wordInNum).ratio() >= 0.66:
+                        print(rowByWord[0])
+                        print(questionMark)
                         searchList.append(counter)
+                        break
             except IndexError:
                 pass
 
@@ -110,19 +117,55 @@ class Decomposer:
                 if i is not None and i != " ":
                     counter = counter + 1
 
-        for index in searchList:
+        print("count done")
+
+        for indexRaw in searchList:
             # coordinate outputs 0 occasionally; if happens, look for another coordinate util not 0
             correction = 1
+            index = indexRaw - 1
             coordinates = lstpos[index]
             coordinate = coordinates[2]
-            while int(coordinate) == 0:
-                coordinates = lstpos[index + correction]
-                coordinate = coordinates[2]
+            try: 
+                while int(coordinate) == 0:
+                    try:
+                        coordinates = lstpos[index + correction]
+                        coordinate = coordinates[2]
+                        if int(coordinate) == 0:
+                            coordinates = lstpos[index - correction]
+                            coordinate = coordinates[2]
+
+                    except IndexError:
+                        coordinates = lstpos[index - correction]
+                        coordinate = coordinates[2]
+
+                    correction = correction + 1
+            except IndexError: 
+                pass
+            posList.append(coordinate)    
+
+        print("coor found")
+
+        try: 
+            percentileSemblance = lstpos[0][2]
+            correction = 1
+            while int(percentileSemblance) == 0:
+                try: 
+                    percentileSemblance = lstpos[0 + correction][2]
+                    if int(percentileSemblance) == 0: 
+                        percentileSemblance = lstpos[0 - correction][2]
+                except IndexError:
+                    print("loop 1")
+                    try: 
+                        print("loop 2")
+                        percentileSemblance = lstpos[0 - correction][2]
+                    except IndexError: 
+                        return 'return'
 
                 correction = correction + 1
-            posList.append(coordinate)
+        except IndexError: 
+            return 'return'
 
-        percentileSemblance = lstpos[0][2]
+        print("Semblance found")
 
         posList = [(int(percentileSemblance) - int(index)) / int(percentileSemblance) for index in posList]
         return posList
@@ -133,13 +176,26 @@ class Decomposer:
         imgppr = Image.open(self.filename)
         width, height = imgppr.size[0], imgppr.size[1]
         percentages = self.allocatePat()
+
+        if percentages == "return":
+            return
+
+        for i in range(0, len(percentages)):
+            try: 
+                if percentages[i] <= max(percentages[0:i]):
+                    percentages[i] = -1
+            except ValueError: 
+                pass
+
+        print(percentages)
+
+        percentages = [num for num in percentages if num >= 0]
+
         print(percentages)
 
         if len(percentages) == 0:
             # If no question marks, the entire page is a question.
             percentages = [0]
-        elif len(percentages) < 3:
-            return "Can't cut this."
 
         for i in range(0, len(percentages)):
             # Cut image
@@ -196,7 +252,10 @@ def RecordListToTable(IMG_CHOICE_list):
 def CutPagesToQs():
     # Loop through every (pdf) file in /papers
     for ppr in os.listdir(ppr_Path):
-        pages = convert_from_path(os.path.join(ppr_Path, ppr), 500)
+        try:
+            pages = convert_from_path(os.path.join(ppr_Path, ppr), 500)
+        except: 
+            return
         for page in pages:
             pic_Path = f'./img_papers/paper-{int(time.time())}.png'
             # Convert pdf to image
@@ -217,7 +276,12 @@ def CutQsToChoices():
             for img in os.listdir(os.path.join(Qs_Path, QFolder)):
                 if img != ".DS_Store":
                     Q_img_Path = os.path.join(Qs_Path, QFolder, img)
-                    Q_ocr_Path = buildOCR(Q_img_Path)
+                    if not str(img).endswith(".png"):
+                        continue
+                    try: 
+                        Q_ocr_Path = buildOCR(Q_img_Path)
+                    except: 
+                        continue
                     TRY1 = Decomposer(Q_img_Path, 'Choice', Q_ocr_Path).cutImage("question")
                     if TRY1 == "Can cut this.":
                         print(TRY1, "__Attempt 1__")
@@ -241,6 +305,8 @@ def CutQsToChoices():
         except NotADirectoryError:
             pass
 
+        # shutil.rmtree(os.path.join(Qs_Path, QFolder))
+
 
 def RecordQs():
     IMG_CHOICE_list = []
@@ -248,32 +314,29 @@ def RecordQs():
         if QFolder != ".DS_Store":
             imgPath, Choices = None, None
             for imgAndChoice in os.listdir(os.path.join(Qs_Path, QFolder)):
-                if imgAndChoice.endswith(".png") and len(os.listdir(os.path.join(Qs_Path, QFolder))) == 2:
-                    imgPath = imgAndChoice
-                    Choices = []
-                    OCR_path = buildOCR(os.path.join(Qs_Path, QFolder, imgAndChoice))
-                    with open(OCR_path, 'rb') as f:
-                        jobj = pickle.load(f)
-                    strQuestion = str(jobj["OCRText"][0][0])
-                    strQuestion.replace('\n', ' ').replace('\r', '')
-                    Choices.append(strQuestion)
-                elif imgAndChoice.endswith(".png"):
+                Choices = []
+                if imgAndChoice.endswith(".png"):
                     imgPath = imgAndChoice
                 elif imgAndChoice == "Choices":
-                    Choices = []
                     for choice in os.listdir(os.path.join(Qs_Path, QFolder, imgAndChoice)):
-                        # We are finally in the correct directory.
+                        # We are in the choices directory.
 
                         OCR_path = buildOCR(os.path.join(Qs_Path, QFolder, imgAndChoice, choice))
+
                         with open(OCR_path, 'rb') as f:
                             jobj = pickle.load(f)
-                        strChoice = str(jobj["OCRText"][0][0])
-                        strChoice.replace('\n', ' ').replace('\r', '')
+                        lstobj = json.loads(jobj)
+                        strChoice = str(lstobj[0])
+
                         Choices.append(strChoice)
-                        print(Choices)
+
+                    print("Here all the choices found for this folder: \n")
+                    print(Choices)
+                    print("\n")
             # Finished cycle for one "Question-xxx" folder. Load info in directory to list.
             IMG_CHOICE_list.append([imgPath, Choices])
-            print(IMG_CHOICE_list)
+
+        shutil.rmtree(os.path.join(Qs_Path, QFolder))
 
     IMG_CHOICE_json = json.dumps(IMG_CHOICE_list)
     with open('IMG_CHOICE.json', 'w') as f:
@@ -283,8 +346,8 @@ def RecordQs():
 
 
 if __name__ == "__main__":
-    CutPagesToQs()
-    CutQsToChoices()
+    # CutPagesToQs()
+    # CutQsToChoices()
     RecordQs()
 
     '''For Test:'''
